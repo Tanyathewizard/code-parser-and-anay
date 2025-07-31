@@ -1,112 +1,87 @@
-from dotenv import load_dotenv
-import os
 
-load_dotenv()
-api_key = os.getenv("OPENAI_API_KEY") 
+from agent import create_agents
+import sys
 import os
-from autogen import AssistantAgent, UserProxyAgent, GroupChat, GroupChatManager
+import subprocess
 
 def main():
-    print(" Code Parser & Analyzer using AutoGen v0.4+")
-    print(" Supports Python, Java, C++, JavaScript, and more")
-    print(" Type 'END' on a new line when you're done entering code.\n")
+    print("🔧 AutoGen Code Analyzer using Gemini")
+    print("Supports Python, Java, C++, JavaScript...\n")
 
-    # Step 1: Get language
-    language = input(" Enter the programming language (e.g. Python, Java, C++): ").strip()
+    # Ask for language
+    language = input("Enter the programming language (or type 'exit' to quit): ").strip()
+    if language.lower() == "exit":
+        print(" Program exited by user.")
+        sys.exit()
 
-    # Step 2: Input code
-    print("\n Paste your code below (type END to finish):\n")
+    if not language:
+        print(" No language provided.")
+        sys.exit()
+
+    # Get user code
+    print("Paste your code (type END to finish or EXIT to cancel):")
     lines = []
     while True:
         line = input()
         if line.strip().upper() == "END":
             break
+        elif line.strip().upper() == "EXIT":
+            print(" Program exited by user.")
+            sys.exit()
         lines.append(line)
-    user_code = "\n".join(lines)
 
-    if not user_code.strip():
-        print(" No code provided. Exiting.")
+    user_code = "\n".join(lines).strip()
+    if not user_code:
+        print("No code provided.")
         return
 
-    # Step 3: Set LLM config (Replace this key with a valid key)
-    llm_config = {
-        "config_list": [
-            {
-                "model": "gpt-4",  # or "gpt-3.5-turbo"
-                "api_key": "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"  # 👈 Use working key here
-            }
-        ],
-        "temperature": 0
-    }
+    # Choose save folder
+    save_dir = input(" Enter folder path to save analysis (Press Enter for current folder): ").strip()
+    if not save_dir:
+        save_dir = os.getcwd()  # Default to current working directory
 
-    # Step 4: Define agents
-    symbol_agent = AssistantAgent(
-        name="SymbolAgent",
-        system_message=f"You are an expert in {language}. Extract all variables, functions, classes, and their scopes as a symbol table.",
-        llm_config=llm_config
+    os.makedirs(save_dir, exist_ok=True)  # Create folder if it doesn't exist
+
+    # Create agents
+    user_proxy, analyzer = create_agents()
+
+    # Start chat
+    print("\n Analyzing your code...\n")
+    response = user_proxy.initiate_chat(
+        recipient=analyzer,
+        message=f"{language}||CODE||{user_code}",
+        max_turns=1
     )
 
-    cfg_agent = AssistantAgent(
-        name="CFGBuilder",
-        system_message=f"You are a control flow expert. Build a control flow graph for {language} code.",
-        llm_config=llm_config
-    )
+    # Extract result content safely
+    content = ""
+    if isinstance(response, dict) and "content" in response:
+        content = response["content"]
+    elif hasattr(response, "chat_history"):
+        last_message = response.chat_history.get(analyzer.name, [])
+        if last_message:
+            content = last_message[-1].get("content", "")
 
-    dfg_agent = AssistantAgent(
-        name="DFGBuilder",
-        system_message=f"You analyze data flow. Build a data flow graph for the code, tracing how variables are assigned and used.",
-        llm_config=llm_config
-    )
+    if content:
+        file_path = os.path.join(save_dir, "analysis_result.txt")
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(content)
 
-    code_analyzer = AssistantAgent(
-        name="CodeAnalyzer",
-        system_message=(
-            "You are the coordinator. Break the task into 3 subtasks:\n"
-            "1. Ask SymbolAgent to extract a symbol table\n"
-            "2. Ask CFGBuilder for a control flow graph\n"
-            "3. Ask DFGBuilder for a data flow graph\n"
-            "Then combine all results into one structured summary."
-        ),
-        llm_config=llm_config
-    )
+        print(" Analysis complete!")
+        print(f" Saved to: {file_path}\n")
+        print("------ ANALYSIS PREVIEW ------")
+        print(content[:1000])  # show first 1000 chars in terminal
 
-    # Step 5: Proxy agent (disabling Docker)
-    user_proxy = UserProxyAgent(
-        name="Coordinator",
-        human_input_mode="NEVER",
-        code_execution_config={"use_docker": False}
-    )
-
-    # Step 6: Group Chat setup
-    group_chat = GroupChat(
-        agents=[user_proxy, code_analyzer, symbol_agent, cfg_agent, dfg_agent],
-        messages=[]
-    )
-    manager = GroupChatManager(groupchat=group_chat, llm_config=llm_config)
-
-    # Step 7: Prompt
-    task_prompt = f"""
-Analyze the following {language} code and return:
-1. A symbol table listing all functions, classes, and variables with their scopes.
-2. A control flow graph (CFG) showing logic flow (conditionals, loops, calls).
-3. A data flow graph (DFG) showing how data moves between variables/functions.
-
-Code:
-{user_code}
-
-Assign tasks to SymbolAgent, CFGBuilder, and DFGBuilder. Combine all results into a clear final summary.
-"""
-
-    # Step 8: Run
-    print("\n Analyzing your code using AutoGen agents...\n")
-    result = user_proxy.initiate_chat(manager, message=task_prompt)
-
-    # Step 9: Save output
-    with open("analysis_output.txt", "w", encoding="utf-8") as f:
-        f.write(str(result))
-
-    print("Analysis complete! Results saved in: analysis_output.txt")
+        # Automatically open file in Notepad
+        try:
+            subprocess.run(["notepad.exe", file_path])
+        except Exception as e:
+            print(f"Could not open file automatically: {e}")
+    else:
+        print(" No response received from analyzer.")
 
 if __name__ == "__main__":
     main()
+
+
 
