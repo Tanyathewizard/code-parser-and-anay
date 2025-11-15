@@ -1,20 +1,54 @@
+# semantic_agent.py
 import json
+import requests
 from autogen.agentchat import AssistantAgent
-from wrapper import MODEL
+import os
+
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+
+# OpenRouter endpoint
+API_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+HEADERS = {
+    "Content-Type": "application/json",
+    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+}
+
+
+def call_llama(prompt: str) -> str:
+    """Call LLaMA-3-70B-Instruct via OpenRouter."""
+    try:
+        payload = {
+            "model": "meta-llama/llama-3-70b-instruct",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.2
+        }
+
+        response = requests.post(API_URL, headers=HEADERS, json=payload)
+        data = response.json()
+
+        return data["choices"][0]["message"]["content"]
+
+    except Exception as e:
+        return f"❌ LLaMA API Error: {str(e)}"
 
 
 class SemanticExtractorAgent(AssistantAgent):
     def generate_reply(self, messages, sender, config=None):
         try:
-            user_msg = messages[-1]["content"]
+            msg = messages[-1]["content"]
 
-            if "||SEMANTICS||" not in user_msg:
-                return {"role": "assistant", "content": "⚠️ Use <lang>||SEMANTICS||<code>"}
+            if "||SEMANTICS||" not in msg:
+                return {"role": "assistant",
+                        "content": "⚠️ Use <lang>||SEMANTICS||<code>"}
 
-            language, code = user_msg.split("||SEMANTICS||", 1)
+            language, code = msg.split("||SEMANTICS||", 1)
 
+            # LLaMA prompt
             prompt = f"""
-Extract the following from the {language} code strictly in JSON:
+You are a senior semantic analysis expert.
+
+Return STRICT JSON in the following format:
 
 {{
   "name": "",
@@ -24,18 +58,27 @@ Extract the following from the {language} code strictly in JSON:
   "complexity_estimate": ""
 }}
 
-Code:
+Analyze this {language} code:
+--------------------------------
 {code}
+--------------------------------
 
-Return ONLY JSON.
+Return ONLY JSON. No explanation.
 """
 
-            raw = MODEL.generate_content(prompt).text
+            raw = call_llama(prompt)
 
             # Parse JSON safely
-            data = json.loads(raw)
+            try:
+                start = raw.find("{")
+                end = raw.rfind("}")
+                json_text = raw[start:end+1]
+                parsed = json.loads(json_text)
+            except:
+                parsed = {"error": "Invalid JSON returned", "raw": raw}
 
-            return {"role": "assistant", "content": json.dumps(data, indent=2)}
+            return {"role": "assistant", "content": json.dumps(parsed, indent=2)}
 
         except Exception as e:
-            return {"role": "assistant", "content": f"❌ Semantic Extractor Error: {str(e)}"}
+            return {"role": "assistant",
+                    "content": f"❌ Semantic Extractor Error: {str(e)}"}
